@@ -10,4 +10,11 @@
 cd /home/emiliano/projects/def-cbravo/emiliano/DyGLib/
 source ~/TGN/bin/activate
 
-python  train_link_prediction.py --dataset_name CanParl --model_name DyGFormer --load_best_configs --num_runs 1 --gpu 1 --num_epochs 10 
+python  train_link_prediction.py --dataset_name Synthetic --model_name DyGFormer --load_best_configs --num_runs 1 --gpu 1 --num_epochs 10 
+
+
+python  train_snapshot.py --dataset_name Synthetic --model_name DyGFormer --load_best_configs --num_runs 1 --gpu 1 --num_epochs 10 
+
+python  produce_embeddings.py --dataset_name Synthetic --model_name DyGFormer --load_best_configs --num_runs 1 --gpu 1 --num_epochs 10 
+
+

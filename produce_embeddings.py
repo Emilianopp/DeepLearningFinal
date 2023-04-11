@@ -1,5 +1,5 @@
-
-
+from collections import defaultdict
+import pickle as pkl
 import numpy as np
 import torch
 import torch.nn as nn
@@ -92,7 +92,7 @@ class DyGFormer(nn.Module):
 
 
         src_nodes_neighbor_ids_list, src_nodes_edge_ids_list, src_nodes_neighbor_times_list = \
-            self.neighbor_sampler.get_all_first_hop_neighbors(node_ids=src_node_ids, node_interact_times=node_interact_times,before = before,dst_node_ids = dst_node_ids)
+        self.neighbor_sampler.get_all_first_hop_neighbors(node_ids=src_node_ids, node_interact_times=node_interact_times,before = before,dst_node_ids = dst_node_ids)
 
         # three lists to store destination nodes' first-hop neighbor ids, edge ids and interaction timestamp information, with batch_size as the list length
         dst_nodes_neighbor_ids_list, dst_nodes_edge_ids_list, dst_nodes_neighbor_times_list = \
@@ -624,9 +624,13 @@ def get_dataset_subset(graph_df,percentage):
 
 
 def make_data_dictionaries(graph_dfs , d, edge_raw_features,node_raw_features ,time_varying_features):
+
     prev_edges = 0
 
     NODE_FEAT_DIM = EDGE_FEAT_DIM = 172
+    # print(node_raw_features[1:100,:])
+
+    
     for ts,graph_df in enumerate(graph_dfs.items()):
         
         graph_df = graph_df[1]
@@ -639,28 +643,34 @@ def make_data_dictionaries(graph_dfs , d, edge_raw_features,node_raw_features ,t
         graph_df = pd.concat([graph_df, new_df], axis=1)
 
     
-        if not time_varying_features:
-            if node_raw_features.shape[1 ] < NODE_FEAT_DIM:
-                node_zero_padding = np.zeros((node_raw_features.shape[0], 172 - node_raw_features.shape[1]))
-                node_features[ts] = np.concatenate([node_raw_features, node_zero_padding], axis=1)
-            
-        else:
-            if node_raw_features.shape[2 ] < NODE_FEAT_DIM:
-                node_zero_padding = np.zeros((node_raw_features[ts].shape[0], 172 - node_raw_features.shape[1]))
-                node_raw_features = np.concatenate([node_raw_features[ts], node_zero_padding], axis=1)
-
         if edge_raw_features.shape[1] < EDGE_FEAT_DIM:
                 edge_zero_padding = np.zeros((edge_raw_features.shape[0], 172 - edge_raw_features.shape[1]))
                 edge_raw_features = np.concatenate([edge_raw_features, edge_zero_padding], axis=1)
-
-        assert NODE_FEAT_DIM == node_raw_features.shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], "Unaligned feature dimensions after feature padding!"
+        if time_varying_features:
+            if node_raw_features.shape[2 ] < NODE_FEAT_DIM:
+                node_zero_padding = np.zeros((node_raw_features[ts].shape[0], 172 - node_raw_features[ts].shape[1]))
+                node_raw_features_ts = np.concatenate([node_raw_features[ts], node_zero_padding], axis=1)
+                # print(f"==>> {node_raw_features.shape=}")
+                # print(f"==>> {node_zero_padding.shape=}")
+        else:
+          
+            if node_raw_features.shape[1 ] < NODE_FEAT_DIM:
+                node_zero_padding = np.zeros((node_raw_features.shape[0], 172 - node_raw_features.shape[1]))
+                # print(f"==>> {node_raw_features.shape=}")
+                # print(f"==>> {node_zero_padding.shape=}")
+                node_raw_features = np.concatenate([node_raw_features, node_zero_padding], axis=1)
+              
+            
    
-        d[ts]= {'edges': make_data(graph_df), 'node_features' : node_raw_features , 'edge_features':edge_raw_features}
+        assert NODE_FEAT_DIM == (node_raw_features_ts if time_varying_features else node_raw_features).shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], "Unaligned feature dimensions after feature padding!"
+
+    
+        d[ts]= {'edges': make_data(graph_df), 'node_features' : node_raw_features_ts if time_varying_features else node_raw_features  , 'edge_features':edge_raw_features}
         prev_edges += len(graph_df)
 
 
-    return d
 
+    return d
 
 
 def get_link_prediction_data_snapshots(dataset_name: str, val_ratio: float, test_ratio: float):
@@ -684,6 +694,8 @@ def get_link_prediction_data_snapshots(dataset_name: str, val_ratio: float, test
         time_varying_features = True
     else: 
         time_varying_features = False
+
+    
     val_graph_df , train_graph_df = get_dataset_subset(graph_df, val_ratio)
 
 
@@ -790,6 +802,7 @@ logger.info(f'configuration is {args}')
 
 node_feature_dim = train_datas[0]['node_features'].shape[1]
 num_nodes = train_datas[0]['node_features'].shape[0]
+
 edge_feature_dim = train_datas[0]['edge_features'].shape[1]
 
 dynamic_backbone = DyGFormer(node_raw_features=None, edge_raw_features=None, neighbor_sampler=train_neighbor_sampler,
@@ -802,7 +815,7 @@ dynamic_backbone = DyGFormer(node_raw_features=None, edge_raw_features=None, nei
 link_predictor = MergeLayer(input_dim1=node_feature_dim, input_dim2=node_feature_dim,
                             hidden_dim=node_feature_dim, output_dim=1)
 model = nn.Sequential(dynamic_backbone, link_predictor)
-model.load_state_dict(torch.load('/home/emiliano/projects/def-cbravo/emiliano/DyGLib/saved_models_snapshot/DyGFormer/CanParl/DyGFormer/DyGFormer.pkl'))
+model.load_state_dict(torch.load(f'/home/emiliano/projects/def-cbravo/emiliano/DyGLib/saved_models_snapshot/DyGFormer/{args.dataset_name}/DyGFormer/DyGFormer.pkl'))
 print('LOADED')
 logger.info(f'model -> {model}')
 logger.info(f'model name: {args.model_name}, #parameters: {get_parameter_sizes(model) * 4} B, '
@@ -825,53 +838,57 @@ snapshots = full_datas.keys()
 full_data_loaders = get_snpashot_idx_data_loaders(full_datas, batch_size=args.batch_size, shuffle=False)
 
 output_embeddings = torch.zeros((len(snapshots) , num_nodes,node_feature_dim)).to(args.device)
+def genetare_dict():
+    return defaultdict(list)
+
+embeddings = defaultdict(genetare_dict)
 
 
-for epoch in range(args.num_epochs):
+model.eval()
+
+model[0].set_neighbor_sampler(full_neighbor_sampler)
+for ts in snapshots :
+    full_idx_data_loader = full_data_loaders[ts]
+    # store train losses and metrics
+    full_data = full_datas[ts]['edges']
+    edge_features = full_datas[ts]['edge_features']
+    node_features = full_datas[ts]['node_features']
+    model[0].set_edge_node_features(node_features,edge_features)
+    full_idx_data_loader_tqdm = tqdm(full_idx_data_loader, ncols=120, position=0, leave=True)
     
-    model.eval()
-    
-    model[0].set_neighbor_sampler(full_neighbor_sampler)
-    for ts in snapshots :
-        full_idx_data_loader = full_data_loaders[ts]
-        # store train losses and metrics
-        full_data = full_datas[ts]['edges']
-        edge_features = full_datas[ts]['edge_features']
-        node_features = full_datas[ts]['node_features']
-        model[0].set_edge_node_features(node_features,edge_features)
-        full_idx_data_loader_tqdm = tqdm(full_idx_data_loader, ncols=120, position=0, leave=True)
+    for batch_idx, full_data_indices in enumerate(full_idx_data_loader_tqdm):
         
-        for batch_idx, full_data_indices in enumerate(full_idx_data_loader_tqdm):
-            
 
-            batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids = \
-                full_data.src_node_ids[full_data_indices], full_data.dst_node_ids[full_data_indices], \
-                full_data.node_interact_times[full_data_indices], full_data.edge_ids[full_data_indices]
+        batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids = \
+            full_data.src_node_ids[full_data_indices], full_data.dst_node_ids[full_data_indices], \
+            full_data.node_interact_times[full_data_indices], full_data.edge_ids[full_data_indices]
 
-            
-            
-            # get temporal embedding of source and destination nodes
-            # two Tensors, with shape (batch_size, node_feat_dim)
-          
-            batch_src_node_embeddings, batch_dst_node_embeddings = \
-                model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_src_node_ids,
-                                                                    dst_node_ids=batch_dst_node_ids,
-                                                                    node_interact_times=batch_node_interact_times,before = args.before)
-            if ( output_embeddings[int(ts), batch_src_node_ids, :] != 0).all():
-                print(f"==>> {batch_src_node_ids[0]=}")
-
-                print(torch.equal(batch_src_node_embeddings[0], output_embeddings[ts, batch_src_node_ids[0], :]))
-                print(f"==>> {output_embeddings[ts, batch_src_node_ids[0], :]=}")
-                print(f"==>> {batch_src_node_embeddings[0]=}")
-                exit(0)
-
-            output_embeddings[int(ts), batch_src_node_ids, :] = batch_src_node_embeddings
-
-
-
-
+        
+        
+        # get temporal embedding of source and destination nodes
+        # two Tensors, with shape (batch_size, node_feat_dim)
+        
+        batch_src_node_embeddings, batch_dst_node_embeddings = \
+            model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_src_node_ids,
+                                                                dst_node_ids=batch_dst_node_ids,
+                                                                node_interact_times=batch_node_interact_times,before = args.before)
+        
+        
+        batch_src_node_embeddings  = batch_src_node_embeddings.detach().to('cpu').numpy()
+        ids  = batch_src_node_ids
             
             
+                
+            
+    for ts in embeddings.keys():
+        for u in embeddings[ts].keys():
+
+            embeddings[ts][u] = [np.mean(embeddings[ts][u],axis =0 )]
+    
+
+with open('embedding_file.pkl', 'wb+') as f:
+            
+    pkl.dump(  embeddings,f)            
             
 
             

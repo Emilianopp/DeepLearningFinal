@@ -1,11 +1,11 @@
 
-
+from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import MultiheadAttention
-
+import matplotlib.pyplot as plt
 from models.modules import TimeEncoder
 from utils.utils import NeighborSampler
 
@@ -89,6 +89,8 @@ class DyGFormer(nn.Module):
         """
         # get the first-hop neighbors of source and destination nodes
         # three lists to store source nodes' first-hop neighbor ids, edge ids and interaction timestamp information, with batch_size as the list length
+        if src_node_ids.shape[0] < node_interact_times.shape[0]:
+            node_interact_times = node_interact_times[range(src_node_ids.shape[0])]
 
 
         src_nodes_neighbor_ids_list, src_nodes_edge_ids_list, src_nodes_neighbor_times_list = \
@@ -272,6 +274,7 @@ class DyGFormer(nn.Module):
         :return:
         """
         # Tensor, shape (batch_size, max_seq_length, node_feat_dim)
+        
         padded_nodes_neighbor_node_raw_features = self.node_raw_features[torch.from_numpy(padded_nodes_neighbor_ids)]
         # Tensor, shape (batch_size, max_seq_length, edge_feat_dim)
         padded_nodes_edge_raw_features = self.edge_raw_features[torch.from_numpy(padded_nodes_edge_ids)]
@@ -627,6 +630,9 @@ def make_data_dictionaries(graph_dfs , d, edge_raw_features,node_raw_features ,t
     prev_edges = 0
 
     NODE_FEAT_DIM = EDGE_FEAT_DIM = 172
+    # print(node_raw_features[1:100,:])
+
+    
     for ts,graph_df in enumerate(graph_dfs.items()):
         
         graph_df = graph_df[1]
@@ -639,28 +645,34 @@ def make_data_dictionaries(graph_dfs , d, edge_raw_features,node_raw_features ,t
         graph_df = pd.concat([graph_df, new_df], axis=1)
 
     
-        if not time_varying_features:
-            if node_raw_features.shape[1 ] < NODE_FEAT_DIM:
-                node_zero_padding = np.zeros((node_raw_features.shape[0], 172 - node_raw_features.shape[1]))
-                node_features[ts] = np.concatenate([node_raw_features, node_zero_padding], axis=1)
-            
-        else:
-            if node_raw_features.shape[2 ] < NODE_FEAT_DIM:
-                node_zero_padding = np.zeros((node_raw_features[ts].shape[0], 172 - node_raw_features.shape[1]))
-                node_raw_features = np.concatenate([node_raw_features[ts], node_zero_padding], axis=1)
-
         if edge_raw_features.shape[1] < EDGE_FEAT_DIM:
                 edge_zero_padding = np.zeros((edge_raw_features.shape[0], 172 - edge_raw_features.shape[1]))
                 edge_raw_features = np.concatenate([edge_raw_features, edge_zero_padding], axis=1)
-
-        assert NODE_FEAT_DIM == node_raw_features.shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], "Unaligned feature dimensions after feature padding!"
+        if time_varying_features:
+            if node_raw_features.shape[2 ] < NODE_FEAT_DIM:
+                node_zero_padding = np.zeros((node_raw_features[ts].shape[0], 172 - node_raw_features[ts].shape[1]))
+                node_raw_features_ts = np.concatenate([node_raw_features[ts], node_zero_padding], axis=1)
+                # print(f"==>> {node_raw_features.shape=}")
+                # print(f"==>> {node_zero_padding.shape=}")
+        else:
+          
+            if node_raw_features.shape[1 ] < NODE_FEAT_DIM:
+                node_zero_padding = np.zeros((node_raw_features.shape[0], 172 - node_raw_features.shape[1]))
+                # print(f"==>> {node_raw_features.shape=}")
+                # print(f"==>> {node_zero_padding.shape=}")
+                node_raw_features = np.concatenate([node_raw_features, node_zero_padding], axis=1)
+              
+            
    
-        d[ts]= {'edges': make_data(graph_df), 'node_features' : node_raw_features , 'edge_features':edge_raw_features}
+        assert NODE_FEAT_DIM == (node_raw_features_ts if time_varying_features else node_raw_features).shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], "Unaligned feature dimensions after feature padding!"
+
+    
+        d[ts]= {'edges': make_data(graph_df), 'node_features' : node_raw_features_ts if time_varying_features else node_raw_features  , 'edge_features':edge_raw_features}
         prev_edges += len(graph_df)
 
 
-    return d
 
+    return d
 
 
 def get_link_prediction_data_snapshots(dataset_name: str, val_ratio: float, test_ratio: float):
@@ -677,17 +689,22 @@ def get_link_prediction_data_snapshots(dataset_name: str, val_ratio: float, test
     
     edge_raw_features = np.load('./processed_data/{}/ml_{}.npy'.format(dataset_name, dataset_name))
     node_raw_features = np.load('./processed_data/{}/ml_{}_node.npy'.format(dataset_name, dataset_name))
-    cur_edges = 0
+    
+
+
 
     full_data_unstacked = make_data(graph_df)
+
+  
+
+    
     if len(node_raw_features.shape) > 2: 
         time_varying_features = True
     else: 
         time_varying_features = False
+
     val_graph_df , train_graph_df = get_dataset_subset(graph_df, val_ratio)
 
-
-    # print(train_graph_df.ts.unique())
 
     test_graph_df , train_graph_df = get_dataset_subset(train_graph_df, (len(graph_df) * test_ratio ) /len(train_graph_df))
     train_data_unstacked = make_data(train_graph_df)
@@ -696,16 +713,15 @@ def get_link_prediction_data_snapshots(dataset_name: str, val_ratio: float, test
     train_graph_dfs = dict(tuple(train_graph_df.groupby('ts')))
     val_graph_dfs = dict(tuple(val_graph_df.groupby('ts')))
     test_graph_dfs = dict(tuple(test_graph_df.groupby('ts')))
-    
-
-
-
-   
 
         
     train_data = make_data_dictionaries(train_graph_dfs,{},edge_raw_features,node_raw_features,time_varying_features)
     val_data = make_data_dictionaries(val_graph_dfs,{},edge_raw_features,node_raw_features,time_varying_features)
     test_data  =make_data_dictionaries(test_graph_dfs,{},edge_raw_features,node_raw_features,time_varying_features)
+
+
+
+
 
     return full_data_unstacked,train_data_unstacked,train_data,val_data,test_data
   
@@ -735,9 +751,9 @@ full_neighbor_sampler = get_neighbor_sampler(data=full_data_unstacked, sample_ne
 
 
 
-train_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=train_data_unstacked.src_node_ids, dst_node_ids=train_data_unstacked.dst_node_ids)
-val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data_unstacked.src_node_ids, dst_node_ids=full_data_unstacked.dst_node_ids, seed=0)
-test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data_unstacked.src_node_ids, dst_node_ids=full_data_unstacked.dst_node_ids, seed=2)
+train_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data_unstacked.src_node_ids, dst_node_ids=full_data_unstacked.dst_node_ids,negative_sample_strategy='true_negative',interact_times=full_data_unstacked.node_interact_times)
+val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data_unstacked.src_node_ids, dst_node_ids=full_data_unstacked.dst_node_ids, seed=0,negative_sample_strategy='true_negative',interact_times=full_data_unstacked.node_interact_times)
+test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data_unstacked.src_node_ids, dst_node_ids=full_data_unstacked.dst_node_ids, seed=2,negative_sample_strategy='true_negative',interact_times=full_data_unstacked.node_interact_times)
 
 
 
@@ -785,8 +801,8 @@ run_start_time = time.time()
 
 logger.info(f'configuration is {args}')
 
-
-node_feature_dim = train_datas[0]['node_features'].shape[1]
+temporal_features = 2 if len(train_datas[0]['node_features'].shape) >2 else 1
+node_feature_dim = train_datas[0]['node_features'].shape[temporal_features] 
 edge_feature_dim = train_datas[0]['edge_features'].shape[1]
 
 dynamic_backbone = DyGFormer(node_raw_features=None, edge_raw_features=None, neighbor_sampler=train_neighbor_sampler,
@@ -819,6 +835,8 @@ loss_func = nn.BCELoss()
 
 
 snapshots = train_data_loaders.keys()
+losses = defaultdict(list)
+fig ,ax = plt.subplots(6,2,figsize = (30,30))
 for epoch in range(args.num_epochs):
     
     model.train()
@@ -839,9 +857,12 @@ for epoch in range(args.num_epochs):
             batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids = \
                 train_data.src_node_ids[train_data_indices], train_data.dst_node_ids[train_data_indices], \
                 train_data.node_interact_times[train_data_indices], train_data.edge_ids[train_data_indices]
+            
+            
 
-            _, batch_neg_dst_node_ids = train_neg_edge_sampler.sample(size=len(batch_src_node_ids))
-            batch_neg_src_node_ids = batch_src_node_ids
+
+            batch_neg_src_node_ids, batch_neg_dst_node_ids = train_neg_edge_sampler.sample(size=len(batch_src_node_ids), batch_src_node_ids = batch_src_node_ids)
+
 
             
             
@@ -864,6 +885,17 @@ for epoch in range(args.num_epochs):
             positive_probabilities = model[1](input_1=batch_src_node_embeddings, input_2=batch_dst_node_embeddings).squeeze(dim=-1).sigmoid()
             negative_probabilities = model[1](input_1=batch_neg_src_node_embeddings, input_2=batch_neg_dst_node_embeddings).squeeze(dim=-1).sigmoid()
 
+
+            if epoch == 10:
+                print(f"==>> {batch_dst_node_ids=}")
+                print(f"==>> {batch_src_node_ids=}")
+                print('\n\n\n\n')
+                print(f"==>> {batch_neg_src_node_ids=}")
+                print(f"==>> {batch_neg_dst_node_ids=}")
+                print('\n\n\n\n')
+                print(positive_probabilities)
+                print(negative_probabilities)
+                exit(0)
             predicts = torch.cat([positive_probabilities, negative_probabilities], dim=0)
             labels = torch.cat([torch.ones_like(positive_probabilities), torch.zeros_like(negative_probabilities)], dim=0)
             loss = loss_func(input=predicts, target=labels)
@@ -881,7 +913,13 @@ for epoch in range(args.num_epochs):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            losses[ts].append(np.mean(train_losses))
+            # print(f"==>> {list(range(len(losses[ts]))) , losses[ts]=}")
+            # exit(0)
+            ax.flatten()[ts].plot(list(range(len(losses[ts]))) , losses[ts])
+            ax.flatten()[ts].set_title(f'{ts=} ')
+            ax.flatten()[ts].set_ylim(.3, 1)
+            fig.savefig('loss_plot.png')
             train_idx_data_loader_tqdm.set_description(f'Epoch: {epoch + 1}, at timestamp : {ts}, train for the {batch_idx + 1}-th batch, train loss: {np.mean(train_losses)}')
 
 

@@ -362,20 +362,49 @@ class NegativeEdgeSampler(object):
         self.src_node_ids = src_node_ids
         self.dst_node_ids = dst_node_ids
         self.interact_times = interact_times
+
         self.unique_src_node_ids = np.unique(src_node_ids)
         self.unique_dst_node_ids = np.unique(dst_node_ids)
         self.unique_interact_times = np.unique(interact_times)
         self.earliest_time = min(self.unique_interact_times)
         self.last_observed_time = last_observed_time
 
-        if self.negative_sample_strategy != 'random':
+        if self.negative_sample_strategy == 'true_negative':
+            time_stamps = set(interact_times)
+            self.possible_edges = {}
+            for ts in time_stamps:
+
+                
+
+                src_node_ids_ts = src_node_ids[np.where(self.interact_times == ts)]
+                dst_node_ids_ts = dst_node_ids[np.where(self.interact_times == ts)]
+
+                node_set = set(src_node_ids_ts) | set(dst_node_ids_ts)
+     
+        
+                observed_edges = set((src_node_id, dst_node_id) for src_node_id,dst_node_id in zip(src_node_ids_ts,dst_node_ids_ts) )| set((dst_node_id,src_node_id) for src_node_id,dst_node_id in zip(src_node_ids_ts,dst_node_ids_ts))
+
+            
+
+
+                self.possible_edges_ts = set((src_node_id, dst_node_id) for src_node_id in node_set for dst_node_id in node_set if src_node_id != dst_node_id)
+
+                self.possible_edges[ts] = self.possible_edges_ts.difference(observed_edges)
+             
+              
+        
+
+
+
+
+        elif self.negative_sample_strategy != 'random':
             # all the possible edges that connect source nodes in self.unique_src_node_ids with destination nodes in self.unique_dst_node_ids
             self.possible_edges = set((src_node_id, dst_node_id) for src_node_id in self.unique_src_node_ids for dst_node_id in self.unique_dst_node_ids)
 
         if self.negative_sample_strategy == 'inductive':
             # set of observed edges
             self.observed_edges = self.get_unique_edges_between_start_end_time(self.earliest_time, self.last_observed_time)
-
+      
         if self.seed is not None:
             self.random_state = np.random.RandomState(self.seed)
 
@@ -413,9 +442,41 @@ class NegativeEdgeSampler(object):
                                                                                  batch_dst_node_ids=batch_dst_node_ids,
                                                                                  current_batch_start_time=current_batch_start_time,
                                                                                  current_batch_end_time=current_batch_end_time)
+        elif self.negative_sample_strategy == 'true_negative': 
+          
+            negative_src_node_ids, negative_dst_node_ids = self.true_negative(size=size, batch_src_node_ids=batch_src_node_ids,
+                                                                                 batch_dst_node_ids=batch_dst_node_ids,
+                                                                                 current_batch_start_time=current_batch_start_time,
+                                                                                 current_batch_end_time=current_batch_end_time)
         else:
             raise ValueError(f'Not implemented error for negative_sample_strategy {self.negative_sample_strategy}!')
         return negative_src_node_ids, negative_dst_node_ids
+    def true_negative(self,size ,batch_src_node_ids, batch_dst_node_ids,current_batch_start_time,current_batch_end_time): 
+  
+        batch_subset = set()
+        assert current_batch_start_time == current_batch_end_time
+        for u in batch_src_node_ids:
+            for n1,n2 in self.possible_edges[current_batch_start_time]:
+                if u == n1 :
+                    batch_subset.add((u, n2))
+              
+                elif u == n2 :
+                    batch_subset.add((u, n1))
+     
+        # print(f"==>> {self.possible_edges=}")
+        # print(f"==>> {len(batch_subset)=}")
+        # print(f"==>> {size=}")
+        if size > len(batch_subset): 
+            size = len(batch_subset)
+        my_sample = random.sample(batch_subset, size)
+
+        out = np.array([x[0] for x in my_sample]), np.array([x[1] for x in my_sample])
+
+
+
+      
+        
+        return out
 
     def random_sample(self, size: int):
         """
