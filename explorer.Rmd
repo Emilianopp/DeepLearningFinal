@@ -174,7 +174,7 @@ def modify_edges(G, p1= .8, p2 = .4, p3 = .6 ,p4 = .2,threshold=.1,num_nodes = 1
 
 ### Let's run some simulations
 
-Set ean and covariance parameters:
+Set mean and covariance parameters:
 
 ```{python}
 mean = [5, 1]
@@ -198,7 +198,7 @@ cov_dictionary = {i:x for i,x in enumerate(covs)}
 print(means_dictionary)
 ```
 
-Generate graph base graph:
+Generate base graph:
 
 ```{python}
 # set seeds
@@ -244,7 +244,7 @@ node_list = node_list.convert_dtypes()
 node_list.to_csv(f'{base}/node_data_Synthetic.csv',index=False)
 ```
 
-Generate multiple time points:
+Generate multiple time steps:
 
 ```{python}
 # histogram of num edges per node
@@ -346,30 +346,55 @@ for ts in embedding_dict.keys():
 ```
 
 ```{python}
-#for i in range(embeddings.shape[0]):
-    i = 11
-    # Generate some example data
-    nodes = embeddings[i,:,:]  # 100 nodes with 10 features each
-    # Create a mask where the rows are all equal to the value
-    #mask = np.all(nodes == 0, axis=1)
+# create plot for each time step
+fig, axis = plt.subplots(nrows=6,ncols=4,figsize=(15,15))
+plt.subplots_adjust(bottom=0.05,top=0.95,hspace=0.5)
+for i in range(embeddings.shape[0]):
+    
+    # Get nodes from this time step
+    nodes = embeddings[i,:,:] 
 
-# Use the mask to exclude the rows
-    #nodes = nodes[~mask]
-
-    # Create a t-SNE object and fit the data
+    # Singular Value Deocmpositions
     # tsne = TSNE(n_components=2)
     U, S, V = np.linalg.svd(nodes)
     nodes_tsne = U[:,:2]
     # nodes_tsne = tsne.fit_transform(nodes)
 
-    # Apply k-means clustering with k=3
+    # Apply k-means clustering
     kmeans = KMeans(n_clusters=2)
     kmeans.fit(nodes_tsne)
     cluster_labels = kmeans.labels_
+    true_labels = np.array(node_list['label'])
+    
+    # Clustering may code 0-1s differently! Take labelling with highest accuracy.
+    acc = sum(true_labels==cluster_labels) / true_labels.size
+    acc2 = sum(true_labels==(1-cluster_labels)) / true_labels.size
+    if acc2>acc:
+      cluster_labels = 1 - cluster_labels
+      acc = acc2
 
     # Visualize the data, colored by cluster labels
-    plt.scatter(nodes_tsne[:, 0], nodes_tsne[:, 1], c=cluster_labels)
-    plt.title(f"t-SNE visualization of nodes {i=}")
-    plt.show()
+    if i % 2 == 0:
+      c1=0
+      c2=1
+    else:
+      c1=2
+      c2=3
+    
+    r=i//2
+    
+    axis[r,c1].scatter(nodes_tsne[:, 0], nodes_tsne[:, 1], c=cluster_labels,s=2)
+    axis[r,c1].set_title(f"cluster {i=}",size=8)
+    axis[r,c1].set_yticklabels([])
+    axis[r,c1].set_xticklabels([])
+    axis[r,c1].text(0.5,0.75,"acc={0:.0%}".format(acc),size=8,transform=axis[r,c1].transAxes)
+    axis[r,c2].scatter(nodes_tsne[:, 0], nodes_tsne[:, 1], c=true_labels,s=2)
+    axis[r,c2].set_title(f"truth {i=}",size=8)
+    axis[r,c2].set_yticklabels([])
+    axis[r,c2].set_xticklabels([])
+
+# The plot    
+plt.show()
+plt.clf()
 ```
 
