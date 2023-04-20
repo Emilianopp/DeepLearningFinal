@@ -89,8 +89,6 @@ class DyGFormer(nn.Module):
         """
         # get the first-hop neighbors of source and destination nodes
         # three lists to store source nodes' first-hop neighbor ids, edge ids and interaction timestamp information, with batch_size as the list length
-
-
         src_nodes_neighbor_ids_list, src_nodes_edge_ids_list, src_nodes_neighbor_times_list = \
         self.neighbor_sampler.get_all_first_hop_neighbors(node_ids=src_node_ids, node_interact_times=node_interact_times,before = before,dst_node_ids = dst_node_ids)
 
@@ -779,7 +777,7 @@ args.save_model_name = f'{args.model_name}'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
-# os.makedirs(f"./logs/{args.model_name}/{args.dataset_name}/{args.save_model_name}/", exist_ok=True)
+os.makedirs(f"./logs/{args.model_name}/{args.dataset_name}/{args.save_model_name}/", exist_ok=True)
 # create file handler that logs debug and higher level messages
 fh = logging.FileHandler(f"./logs/{args.model_name}/{args.dataset_name}/{args.save_model_name}/{str(time.time())}.log")
 fh.setLevel(logging.DEBUG)
@@ -815,7 +813,7 @@ dynamic_backbone = DyGFormer(node_raw_features=None, edge_raw_features=None, nei
 link_predictor = MergeLayer(input_dim1=node_feature_dim, input_dim2=node_feature_dim,
                             hidden_dim=node_feature_dim, output_dim=1)
 model = nn.Sequential(dynamic_backbone, link_predictor)
-model.load_state_dict(torch.load(f'/home/emiliano/projects/def-cbravo/emiliano/DyGLib/saved_models_snapshot/DyGFormer/{args.dataset_name}/DyGFormer/DyGFormer.pkl'))
+model.load_state_dict(torch.load(f'./saved_models_snapshot/DyGFormer/{args.dataset_name}/DyGFormer/DyGFormer.pkl'))
 print('LOADED')
 logger.info(f'model -> {model}')
 logger.info(f'model name: {args.model_name}, #parameters: {get_parameter_sizes(model) * 4} B, '
@@ -843,10 +841,10 @@ def genetare_dict():
 
 embeddings = defaultdict(genetare_dict)
 
-
 model.eval()
 
 model[0].set_neighbor_sampler(full_neighbor_sampler)
+# for each snapshot
 for ts in snapshots :
     full_idx_data_loader = full_data_loaders[ts]
     # store train losses and metrics
@@ -856,40 +854,25 @@ for ts in snapshots :
     model[0].set_edge_node_features(node_features,edge_features)
     full_idx_data_loader_tqdm = tqdm(full_idx_data_loader, ncols=120, position=0, leave=True)
     
+    # for each batch in each snapshot
     for batch_idx, full_data_indices in enumerate(full_idx_data_loader_tqdm):
-        
-
         batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids = \
             full_data.src_node_ids[full_data_indices], full_data.dst_node_ids[full_data_indices], \
             full_data.node_interact_times[full_data_indices], full_data.edge_ids[full_data_indices]
 
-        
-        
         # get temporal embedding of source and destination nodes
         # two Tensors, with shape (batch_size, node_feat_dim)
-        
-        batch_src_node_embeddings, batch_dst_node_embeddings = \
-            model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_src_node_ids,
+        try:
+            batch_src_node_embeddings, batch_dst_node_embeddings = \
+                model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_src_node_ids,
                                                                 dst_node_ids=batch_dst_node_ids,
                                                                 node_interact_times=batch_node_interact_times,before = args.before)
-        
-        
-        batch_src_node_embeddings  = batch_src_node_embeddings.detach().to('cpu').numpy()
-        ids  = batch_src_node_ids
+            for k,(u,v) in enumerate(zip(batch_src_node_ids,batch_dst_node_ids)):
+                embeddings[ts][u] = batch_src_node_embeddings[k].detach().to('cpu').numpy()
+                embeddings[ts][v] = batch_dst_node_embeddings[k].detach().to('cpu').numpy()
             
-            
-                
-            
-    for ts in embeddings.keys():
-        for u in embeddings[ts].keys():
-
-            embeddings[ts][u] = [np.mean(embeddings[ts][u],axis =0 )]
+        except:
+            print(":(")
     
-
 with open('embedding_file.pkl', 'wb+') as f:
-            
-    pkl.dump(  embeddings,f)            
-            
-
-            
-
+    pkl.dump(  embeddings,f)

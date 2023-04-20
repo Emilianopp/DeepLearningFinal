@@ -1,4 +1,6 @@
+
 ### Deep Learning Final Project 
+
 
 Community detection across social networks is a problem that has been heavily studied and
 a primary area of interest in network science. Often, communities are not static in nature, with

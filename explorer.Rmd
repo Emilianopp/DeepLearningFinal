@@ -1,0 +1,571 @@
+---
+title: An R Markdown document converted from "explorer.ipynb"
+output: html_document
+---
+
+## Import packages
+
+```{python}
+import pandas as pd
+import networkx as nx
+import numpy as np
+from statistics import mean 
+import warnings
+import matplotlib.pyplot as plt
+import random
+import pickle as pkl
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+from collections import defaultdict
+warnings.filterwarnings("ignore")
+```
+
+## Stochastic Block Model
+
+### The Code for Simulations
+
+This class stores a simulated graph:
+
+```{python}
+class BLock_model():
+    # initialize graph
+    def __init__(self,n_nodes, n_communities, cov_dictionary , means_dictionary , num_feats) -> None:
+
+        self.arr = np.zeros((n_nodes,num_feats))
+        self.n_nodes = n_nodes
+        self.nodes_per_community = int(np.floor(n_nodes/ n_communities))
+        
+        # for each community, simulate X values (distances)
+        cur_nodes = 0
+        for c in range(n_communities):
+            x= np.random.multivariate_normal(means_dictionary[c], cov_dictionary[c], self.nodes_per_community )
+            self.arr[cur_nodes:cur_nodes + self.nodes_per_community,:] = x
+            cur_nodes += self.nodes_per_community
+
+        # half data gets label 0, other label 1
+        self.labels = {i: (lambda x: 0 if x> self.nodes_per_community  else 1)(i) for i in range(n_nodes)}
+        self.colors = {i: (lambda x: 'red' if x> self.nodes_per_community  else 'blue')(i) for i in range(self.n_nodes)}
+        
+        # create graph
+        self.G =nx.Graph()
+        nx.set_node_attributes(self.G, dict(zip(self.G.nodes(), self.arr)), 'features')
+        nx.set_node_attributes(self.G, {i: (lambda x: 'red' if x> self.nodes_per_community else 'blue')(i) for i in range(self.n_nodes)}, 'color')
+        nx.set_node_attributes(self.G, {i: (lambda x: 0 if x> self.nodes_per_community else 1)(i) for i in range(self.n_nodes)}, 'label')
+
+    # get x values for the graph
+    def get_distances(self):
+        distances = np.zeros((self.arr.shape[0],self.arr.shape[0]))
+        for i in range(self.arr.shape[0]): 
+            for j in range(self.arr.shape[0]):
+                u = self.arr[i,: ]
+                v = self.arr[j,:]
+                distance = np.linalg.norm(u - v)
+                distances[i,j] = distance
+        return (distances - np.min(distances))/(np.max(distances) - np.min(distances))
+            
+    # generate graph based on probabilities of generating edges
+    def generate_Graph(self,thresh = .1 , inter_community_p =  .9 , outer_community_p = .4, close_features_p= .3, type_p=1.0):
+        # "type" of user, which will be used to change connection behaviour
+        self.types = np.random.binomial(1,type_p,self.n_nodes)
+        
+        G= nx.Graph()
+        distances = self.get_distances()
+        def add_edge(i,j): 
+            self.G.add_edge(i,j) 
+            self.G.add_edge(j,i)
+        for i in range(self.arr.shape[0]): 
+            for j in range(i+1,self.arr.shape[0]):
+                distance = distances[i,j]
+                r = np.random.uniform(0,1)
+                if distance < thresh: # if the covariates are close it influences the probability of forming an edge
+                    if self.types[i]==1:
+                      if self.labels[i] != self.labels[j]:
+                          if outer_community_p>r :
+                              add_edge(i,j)
+                      else:
+                          if  inter_community_p > r: 
+                              add_edge(i,j)
+                    else:
+                      if self.labels[i] != self.labels[j]:
+                          if inter_community_p>r :
+                              add_edge(i,j)
+                      else:
+                          if  outer_community_p > r: 
+                              add_edge(i,j)
+                else:  # if covariates are further apart this decreases the probability of not forming an edge
+                    if   close_features_p > r :
+                        add_edge(i,j)
+        
+        nx.set_node_attributes(self.G, dict(zip(self.G.nodes(), self.arr)), 'features')
+        nx.set_node_attributes(self.G, {i: (lambda x: 'red' if x> self.nodes_per_community else 'blue')(i) for i in range(self.n_nodes)}, 'color')
+        nx.set_node_attributes(self.G, {i: (lambda x: 0 if x> self.nodes_per_community else 1)(i) for i in range(self.n_nodes)}, 'label')
+
+    def set_node_features(self):
+        nx.set_node_attributes(self.G, dict(zip(self.G.nodes(), self.arr)), 'features')
+        nx.set_node_attributes(self.G, {i: (lambda x: 'red' if x> self.nodes_per_community else 'blue')(i) for i in range(self.n_nodes)}, 'color')
+        nx.set_node_attributes(self.G, {i: (lambda x: 0 if x> self.nodes_per_community else 1)(i) for i in range(self.n_nodes)}, 'label')
+        
+    def get_edges_and_attributes(self,ts):
+        edge_list = nx.to_pandas_edgelist(self.G)
+        attr = pd.DataFrame.from_dict(dict(self.G.nodes(data=True)), orient='index')
+        for j in range(attr.iloc[:,0].shape[0]):
+            # print(f"==>> {attr.iloc[:,j]=} \n {attr=}")
+            attr[f'x{j}'] = pd.Series([x[0] for x in attr.iloc[:,0]])
+
+        attr = attr.drop(columns = ['features'])
+        edge_list['ts'] = pd.Series([ts for k in range(len(edge_list))])
+        
+        return edge_list,attr[['x1','x2']].to_numpy()
+    
+    def draw(self):
+        nx.draw(self.G, pos = nx.spring_layout(self.G), with_labels=True, node_color = [x for x in self.colors.values()])
+        plt.show()
+
+    def hist(self,ax,ts = None):
+        # compute the degree distribution
+
+        degree_sequence = sorted([d for n, d in self.G.degree()], reverse=True)
+        # print(f"==>> {degree_sequence=}")
+        degree_counts = nx.degree_histogram(self.G)
+
+        # plot the histogram
+        # ax.bar(range(len(degree_counts)), degree_counts)
+        ax.hist(degree_sequence)
+        # ax.set_xlim(np.min(degree_counts))
+
+        # ax.xlabel('Degree')
+        # ax.ylabel('Count')
+        ax.set_title(f'Average Degree = {np.mean(degree_sequence): .2f} with the minium degree = {np.min(degree_sequence)} at ts={ts }')
+        # print(f"==>> {np.mean(degree_counts)=}")
+        # print(f"==>> {degree_counts=}")
+```
+
+This function is used to step time forward by one unit:
+
+```{python}
+def modify_edges(bb, p1= .8, p2 = .4, p3 = .6 ,p4 = .2,threshold=.1,num_nodes = 100,means =[[3,1],[-3,-3]], covs=[[[3, 0], [0, 2]], [[3, 0], [0, 2]]] ):
+
+    means_dictionary = {i:x for i,x in enumerate(means)}
+    cov_dictionary = {i:x for i,x in enumerate(covs)}
+    new_block = BLock_model(num_nodes,2 ,cov_dictionary,means_dictionary, 2)
+    new_block.types = bb.types
+
+    new_distnaces = new_block.get_distances()
+    # print(new_distnaces.shape)
+    # plt.hist(new_distnaces.flatten()[:100])
+    # raise Exception
+    for u in bb.G.nodes():
+        for v in bb.G.nodes():
+          if u < v:
+            # print(u)
+            # Check if u and v are in the same community
+            if bb.G.has_edge(u, v) and bb.G.nodes[u]['label'] == bb.G.nodes[v]['label']:
+                # Move forward edges with probability p1
+                if random.random() < p1:
+                    new_block.G.add_edge(u, v) 
+                    new_block.G.add_edge(v, u) 
+                
+            elif bb.G.has_edge(u, v):
+                # Move forward edges with probability p2
+                if random.random() < p2:
+                    new_block.G.add_edge(u, v)
+                    new_block.G.add_edge(v, u)
+                
+            # Check if u and v do not have an edge and their current feature is below a certain value
+            if not bb.G.has_edge(u, v) and new_distnaces[u,v] < threshold :
+              if new_block.types[u]==1:
+                if bb.G.nodes[u]['label'] == bb.G.nodes[v]['label']:
+                    if random.random() < p3:
+                        new_block.G.add_edge(u, v)
+                        new_block.G.add_edge(v, u)
+                else:
+                    if random.random() < p4:
+                        new_block.G.add_edge(u, v)
+                        new_block.G.add_edge(v, u)
+              else:
+                if bb.G.nodes[u]['label'] == bb.G.nodes[v]['label']:
+                    if random.random() < p4:
+                        new_block.G.add_edge(u, v)
+                        new_block.G.add_edge(v, u)
+                else:
+                    if random.random() < p3:
+                        new_block.G.add_edge(u, v)
+                        new_block.G.add_edge(v, u)
+
+    return new_block
+```
+
+
+### Let's run some simulations
+
+Set mean and covariance parameters:
+
+```{python}
+mean = [5, 1]
+cov = [[3, 0], [0, 2]]
+mean2 = [-5, -1]
+cov2 = [[3, 0], [0, 2]]
+
+means = [mean, mean2]
+covs = [cov,cov2]
+
+new_mean = [3, 0.5]
+new_cov = [[2, 0], [0, 1]]
+new_mean2 = [-3, -0.5]
+new_cov2 = [[2, 0], [0, 1]]
+
+means2 = [new_mean, new_mean2]
+covs2 = [new_cov,new_cov2]
+
+means_dictionary = {i:x for i,x in enumerate(means)}
+cov_dictionary = {i:x for i,x in enumerate(covs)}
+print(means_dictionary)
+```
+
+Simuation Scenarios:
+
+```{python}
+# twitter user types
+# type 1: more likely to tweet at users in same community
+def user_type1(b):
+    b.generate_Graph(
+      0.4, # thresh
+      0.7, # Pr(create edge | same community, distance<thresh)
+      0.05, # Pr(create edge | different communities, distance<thresh)
+      0.75,  # Pr(create edge | distance>thresh)
+      1 # user "type"
+    )
+    
+# type 2: more likely to tweet at users in different community
+def user_type2(b):
+    b.generate_Graph(
+      0.4, # thresh
+      0.7, # Pr(create edge | same community, distance<thresh)
+      0.05, # Pr(create edge | different communities, distance<thresh)
+      0.75,  # Pr(create edge | distance>thresh)
+      0 # user "type"
+    )
+    
+# type 3: 50/50 mix of types 1 and 2
+def user_type3(b):
+    b.generate_Graph(
+      0.4, # thresh
+      0.7, # Pr(create edge | same community, distance<thresh)
+      0.05, # Pr(create edge | different communities, distance<thresh)
+      0.75,  # Pr(create edge | distance>thresh)
+      0.5 # user "type"
+    )
+    
+```
+
+```{python}
+# set seeds
+# simulation 3
+random.seed(314243)
+np.random.seed(8748)
+
+# parameters / empty data
+base = 'processed_data/Synthetic/'
+edges_all = pd.DataFrame()
+attr_all = []
+num_nodes = 120
+
+# initialize graph structure
+base_block = BLock_model(
+  num_nodes,  # n_nodes
+  2 ,  # n_communities
+  cov_dictionary, # covariance
+  means_dictionary, # means
+  2) # num features
+
+# simulate edge connections
+user_type1(base_block)
+
+# store nodes, features, and true labels (nodes stay the same throughout all time steps!)
+node_list = []
+for u in base_block.G.nodes:
+  node_list.append(
+      [u,
+       base_block.G.nodes[u]['label'],
+       base_block.G.nodes[u]['features'][0],
+       base_block.G.nodes[u]['features'][1]]
+    )
+node_list = np.array(node_list)
+node_list = pd.DataFrame(node_list,columns=["node","label","x1","x2"])
+node_list = node_list.convert_dtypes()
+
+# Save nodes data
+node_list.to_csv(f'{base}/node_data_Synthetic.csv',index=False)
+```
+
+Generate multiple time steps:
+
+```{python}
+# histogram of num edges per node
+fig,ax = plt.subplots(1,1 , figsize = (5,5))
+base_block.hist(ax)
+plt.show()
+
+# generate modified graph at each time point, store edges
+prev_edges,previous = base_block.get_edges_and_attributes(0)
+edge_lists = []
+graphs = runs = 12
+fig,ax = plt.subplots(int(graphs/2),2 , figsize = (20,40))
+for i in range(graphs ):
+    if i == runs:
+        break
+      
+    # simulate next time step  
+    new_block =  modify_edges(base_block, \
+                  num_nodes = num_nodes, \
+                  p1= .75 if i < graphs/2 else 0.75 , \
+                  p2 = .25 if i < graphs/2 else 0.75, \
+                  p3 = .1 if i < graphs/2 else .2, \
+                  p4 = .05 if i < graphs/2 else .2 , \
+                  threshold=.4 if i < graphs/2 else 0.8,\
+                  means = means if i < graphs/2 else means2, \
+                  covs = covs if i < graphs/2 else covs2)
+    new_block.set_node_features()
+    
+    # obtain edges and node attributes from this time step
+    edges,attr = new_block.get_edges_and_attributes(i)
+    
+    # draw histogram
+    new_block.hist(ax = ax.flatten()[i], ts = i )
+    
+    # reset loop vars and store data from this time step
+    previous = attr
+    prev_edges = edges
+    edge_lists.append(edges)
+    if i == 0 :
+        attr_all = attr
+    else:
+        attr_all = np.vstack([attr_all,attr])
+    base_block = new_block
+    
+
+# save edges data
+edges_all = pd.concat(edge_lists,axis = 0)
+edges_all= edges_all.rename(columns = {'source': 'u','target':'i'})
+edges_all['idx'] = pd.Series([ x for x in range(len(edges_all))])
+edges_all['label'] = pd.Series([ 0 for x in range(len(edges_all))])
+edges_all.to_csv(f'{base}/ml_Synthetic.csv',index=False)
+
+# save node attributes data (edge-level data)
+attr_all = attr_all.reshape((runs,num_nodes,2))
+np.save(f'{base}/ml_Synthetic_node.npy',attr_all)
+
+# save edge attributes --> there are none!  --> column of 1s
+edge_attr = np.ones(len(edges_all)).reshape(-1,1)
+np.save(f'{base}/ml_Synthetic.npy',edge_attr)
+```
+
+## Train model
+
+run `python train_snapshot.py --dataset_name Synthetic`
+
+defaults
+
+- `--model_name DyGFormer`
+- `-gpu 0`
+- `--num_neighbors 20`
+- `--learning_rate 0.0001`
+- `--num_epochs 30`
+- `--val_ratio 0.15`
+- `--test_ratio 0.15`
+
+## Produce embeddings
+
+run `python produce_embeddings.py --dataset_name Synthetic`
+
+
+## Clustering
+
+```{python}
+def genetare_dict():
+    return defaultdict(list)
+with open('embedding_file.pkl' , 'rb') as f :
+    embedding_dict = pkl.load(f)
+```
+
+```{python}
+# dictionary has dimensions 12 x 120 x 172
+num_feats = embedding_dict[0][0].shape[0]
+embeddings = np.zeros((len(embedding_dict.keys()),120, num_feats))
+```
+
+```{python}
+for ts in embedding_dict.keys():
+    for u in embedding_dict[ts].keys():
+        try:
+            embeddings[ts,u,:] = embedding_dict[ts][u]
+        except Exception as e:
+            print(embedding_dict[ts][u])
+            raise Exception
+```
+
+```{python}
+thenodelist = pd.read_csv('processed_data/Synthetic/node_data_Synthetic.csv')
+
+# create plot for each time step
+fig, axis = plt.subplots(nrows=6,ncols=4,figsize=(15,15))
+plt.subplots_adjust(bottom=0.05,top=0.95,hspace=0.5)
+for i in range(embeddings.shape[0]):
+    
+    # Get nodes from this time step
+    nodes = embeddings[i,:,:] 
+
+    # Singular Value Deocmpositions
+    # tsne = TSNE(n_components=2)
+    U, S, V = np.linalg.svd(nodes)
+    nodes_tsne = U[:,:2]
+    # nodes_tsne = tsne.fit_transform(nodes)
+
+    # Apply k-means clustering
+    kmeans = KMeans(n_clusters=2)
+    kmeans.fit(nodes_tsne)
+    cluster_labels = kmeans.labels_
+    true_labels = np.array(thenodelist['label'])
+    
+    # Clustering may code 0-1s differently! Take labelling with highest accuracy.
+    acc = sum(true_labels==cluster_labels) / true_labels.size
+    acc2 = sum(true_labels==(1-cluster_labels)) / true_labels.size
+    if acc2>acc:
+      cluster_labels = 1 - cluster_labels
+      acc = acc2
+
+    # Visualize the data, colored by labels
+    if i % 2 == 0:
+      c1=0
+      c2=1
+    else:
+      c1=2
+      c2=3
+    r=i//2
+    axis[r,c1].scatter(nodes_tsne[:, 0], nodes_tsne[:, 1], c=cluster_labels,s=2)
+    axis[r,c1].set_title(f"cluster {i=} "+ "(acc={0:.0%})".format(acc),size=8)
+    axis[r,c1].set_yticklabels([])
+    axis[r,c1].set_xticklabels([])
+    #axis[r,c1].text(0.5,0.75,"acc={0:.0%}".format(acc),size=8,color="red",transform=axis[r,c1].transAxes)
+    axis[r,c2].scatter(nodes_tsne[:, 0], nodes_tsne[:, 1], c=true_labels,s=2)
+    axis[r,c2].set_title(f"truth {i=}",size=8)
+    axis[r,c2].set_yticklabels([])
+    axis[r,c2].set_xticklabels([])
+
+# The plot    
+plt.show()
+plt.savefig("Sim3.png")
+plt.clf()
+```
+
+
+
+
+# Simulations
+
+## Simulation 1
+
+```{python}
+# simulation 1
+random.seed(93217465)
+np.random.seed(21983765)
+
+#########
+mean = [5, 1]
+cov = [[3, 0], [0, 2]]
+mean2 = [-5, -1]
+cov2 = [[3, 0], [0, 2]]
+
+means = [mean, mean2]
+covs = [cov,cov2]
+
+new_mean = [3, 0.5]
+new_cov = [[2, 0], [0, 1]]
+new_mean2 = [-3, -0.5]
+new_cov2 = [[2, 0], [0, 1]]
+
+means2 = [new_mean, new_mean2]
+covs2 = [new_cov,new_cov2]
+
+means_dictionary = {i:x for i,x in enumerate(means)}
+cov_dictionary = {i:x for i,x in enumerate(covs)}
+print(means_dictionary)
+
+####
+def user_type1(b):
+    b.generate_Graph(
+      0.4, # thresh
+      0.7, # Pr(create edge | same community, distance<thresh)
+      0.05, # Pr(create edge | different communities, distance<thresh)
+      0.75,  # Pr(create edge | distance>thresh)
+      1 # user "type"
+    )
+
+#######
+new_block =  modify_edges(base_block, \
+                  num_nodes = num_nodes, \
+                  p1= .75 if i < graphs/2 else 0.75 , \
+                  p2 = .25 if i < graphs/2 else 0.25, \
+                  p3 = .1 if i < graphs/2 else .1, \
+                  p4 = .05 if i < graphs/2 else .05 , \
+                  threshold=.4 if i < graphs/2 else .4,\
+                  means = means if i < graphs/2 else means2, \
+                  covs = covs if i < graphs/2 else covs2)
+
+```
+
+
+## Simulation 2
+
+```{python}
+# simulation 2
+random.seed(3453)
+np.random.seed(7587)
+
+########
+mean = [5, 1]
+cov = [[3, 0], [0, 2]]
+mean2 = [-5, -1]
+cov2 = [[3, 0], [0, 2]]
+
+means = [mean, mean2]
+covs = [cov,cov2]
+
+new_mean = [3, 0.5]
+new_cov = [[2, 0], [0, 1]]
+new_mean2 = [-3, -0.5]
+new_cov2 = [[2, 0], [0, 1]]
+
+means2 = [new_mean, new_mean2]
+covs2 = [new_cov,new_cov2]
+
+means_dictionary = {i:x for i,x in enumerate(means)}
+cov_dictionary = {i:x for i,x in enumerate(covs)}
+print(means_dictionary)
+
+####
+def user_type2(b):
+    b.generate_Graph(
+      0.4, # thresh
+      0.7, # Pr(create edge | same community, distance<thresh)
+      0.05, # Pr(create edge | different communities, distance<thresh)
+      0.75,  # Pr(create edge | distance>thresh)
+      1 # user "type"
+    )
+
+#######
+new_block =  modify_edges(base_block, \
+                  num_nodes = num_nodes, \
+                  p1= .75 if i < graphs/2 else 0.75 , \
+                  p2 = .25 if i < graphs/2 else 0.25, \
+                  p3 = .1 if i < graphs/2 else .1, \
+                  p4 = .05 if i < graphs/2 else .05 , \
+                  threshold=.4 if i < graphs/2 else .4,\
+                  means = means if i < graphs/2 else means2, \
+                  covs = covs if i < graphs/2 else covs2)
+
+```
+
+
