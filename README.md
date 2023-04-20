@@ -20,3 +20,12 @@ TO generete place the data in the root directory and execute
 ```
 python make_dblp.py --datset_dir ./data/
 ```
+
+
+We would like to thank the authors of 
+
+[Towards Better Dynamic Graph Learning:
+
+New Architecture and Unified Library](https://arxiv.org/pdf/2303.13047.pdf)
+
+for making their [code](https://github.com/yule-BUAA/DyGLib) public and easy to reproduce
